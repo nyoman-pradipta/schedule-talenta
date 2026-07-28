@@ -133,6 +133,27 @@ async function saveScreenshot(page, name) {
 
   const page = await context.newPage();
 
+  // Listen console logs dari browser
+  page.on('console', (msg) => {
+    if (msg.type() === 'error' || msg.text().includes('error') || msg.text().includes('Attendance')) {
+      log(`[BROWSER CONSOLE] ${msg.type().toUpperCase()}: ${msg.text()}`);
+    }
+  });
+
+  // Listen semua API response yang berkaitan dengan attendance/clock-in
+  page.on('response', async (response) => {
+    const url = response.url();
+    if (url.includes('attendance') || url.includes('clock') || url.includes('live') || url.includes('api')) {
+      const status = response.status();
+      if (status >= 400 || url.includes('clock') || url.includes('attendance')) {
+        try {
+          const body = await response.text();
+          log(`[API RESPONSE ${status}] ${url} => ${body.substring(0, 300)}`);
+        } catch (e) {}
+      }
+    }
+  });
+
   try {
     // ── Step 1: Login ──────────────────────────────────────────────────────────
     log('Navigating to Talenta (will redirect to Mekari SSO)...');
