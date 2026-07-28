@@ -1,0 +1,13 @@
+{
+  "name": "schedule-talenta",
+  "version": "1.0.0",
+  "description": "Auto clock-in Talenta via Playwright headless browser",
+  "main": "clockin.js",
+  "scripts": {
+    "clockin": "node clockin.js",
+    "dry-run": "node clockin.js --dry-run"
+  },
+  "dependencies": {
+    "playwright": "^1.47.0"
+  }
+}
