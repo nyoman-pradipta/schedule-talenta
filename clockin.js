@@ -59,13 +59,15 @@ async function saveScreenshot(page, name) {
       '--no-sandbox',
       '--disable-setuid-sandbox',
       '--disable-dev-shm-usage',
+      '--use-fake-ui-for-media-stream',
+      '--use-fake-device-for-media-stream',
     ],
   });
 
-  // Buat context dengan geolocation spoofed
+  // Buat context dengan geolocation + camera spoofed
   const context = await browser.newContext({
     geolocation: { latitude: LAT, longitude: LNG, accuracy: 15 },
-    permissions: ['geolocation'],
+    permissions: ['geolocation', 'camera'],
     locale: 'id-ID',
     timezoneId: 'Asia/Makassar',
     userAgent:
@@ -74,8 +76,8 @@ async function saveScreenshot(page, name) {
   });
 
   // Grant permission spesifik untuk origin Talenta
-  await context.grantPermissions(['geolocation'], { origin: 'https://hr.talenta.co' });
-  await context.grantPermissions(['geolocation'], { origin: 'https://account.mekari.com' });
+  await context.grantPermissions(['geolocation', 'camera'], { origin: 'https://hr.talenta.co' });
+  await context.grantPermissions(['geolocation', 'camera'], { origin: 'https://account.mekari.com' });
 
   // Override navigator.geolocation via JS injection dengan callback async (setTimeout)
   // Sangat penting: React/Vue Promise wrapper membutuhkan callback async agar tidak race-condition!
@@ -267,11 +269,33 @@ async function saveScreenshot(page, name) {
       await page.waitForTimeout(4000);
       await saveScreenshot(page, '05-after-clockin');
 
+      // Cek apakah ada modal kamera/selfie atau konfirmasi (misal: "Snapshot", "Take Photo", "Submit", "Clock In", dll)
+      const selfieBtnSelectors = [
+        'button:has-text("Snapshot")',
+        'button:has-text("Ambil Foto")',
+        'button:has-text("Take Photo")',
+        'button:has-text("Foto")',
+        '[class*="snapshot"]',
+        '[class*="capture"]',
+      ];
+
+      for (const selfieSel of selfieBtnSelectors) {
+        const selfieBtn = page.locator(selfieSel).first();
+        if (await selfieBtn.isVisible({ timeout: 2000 }).catch(() => false)) {
+          log(`Selfie capture button found with selector: ${selfieSel}, clicking...`);
+          await selfieBtn.click();
+          await page.waitForTimeout(2000);
+          await saveScreenshot(page, '06-after-selfie-snap');
+          break;
+        }
+      }
+
       // Cek apakah ada dialog / modal konfirmasi (misal: "Submit", "Yes", "Clock In", "OK", "Confirm", dll)
       const modalBtnSelectors = [
         '.modal-dialog button:has-text("Clock In")',
         '.modal button:has-text("Clock In")',
         'button:has-text("Submit")',
+        'button:has-text("Kirim")',
         'button:has-text("OK")',
         'button:has-text("Confirm")',
         'button:has-text("Ya")',
