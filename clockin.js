@@ -73,6 +73,41 @@ async function saveScreenshot(page, name) {
     viewport: { width: 1280, height: 800 },
   });
 
+  // Override navigator.geolocation via JS injection (belt+suspenders)
+  // Ini memastikan website mendapat koordinat rumah bahkan jika Playwright
+  // context geolocation tidak ter-pickup oleh framework JS tertentu
+  await context.addInitScript(({ lat, lng }) => {
+    const mockPosition = {
+      coords: {
+        latitude: lat,
+        longitude: lng,
+        accuracy: 20,
+        altitude: null,
+        altitudeAccuracy: null,
+        heading: null,
+        speed: null,
+      },
+      timestamp: Date.now(),
+    };
+    const geo = {
+      getCurrentPosition: (success) => success(mockPosition),
+      watchPosition: (success) => { success(mockPosition); return 1; },
+      clearWatch: () => {},
+    };
+    Object.defineProperty(navigator, 'geolocation', { value: geo, writable: false });
+    // Also override permissions API so site thinks geolocation is granted
+    const origQuery = window.navigator.permissions && window.navigator.permissions.query.bind(window.navigator.permissions);
+    if (origQuery) {
+      window.navigator.permissions.query = (params) => {
+        if (params.name === 'geolocation') {
+          return Promise.resolve({ state: 'granted', onchange: null });
+        }
+        return origQuery(params);
+      };
+    }
+  }, { lat: LAT, lng: LNG });
+
+
   const page = await context.newPage();
 
   try {
@@ -185,27 +220,39 @@ async function saveScreenshot(page, name) {
       // Klik Clock In
       await clockInBtn.click();
       log('Clicked Clock In button!');
-      await page.waitForTimeout(3000);
+      await page.waitForTimeout(4000);
       await saveScreenshot(page, '05-after-clockin');
 
-      // Cek apakah ada dialog konfirmasi
-      const confirmBtn = page.locator([
+      // Cek apakah ada dialog / modal konfirmasi (misal: "Submit", "Yes", "Clock In", "OK", "Confirm", dll)
+      const modalBtnSelectors = [
+        '.modal-dialog button:has-text("Clock In")',
+        '.modal button:has-text("Clock In")',
+        'button:has-text("Submit")',
         'button:has-text("OK")',
         'button:has-text("Confirm")',
         'button:has-text("Ya")',
         'button:has-text("Iya")',
         'button[class*="confirm"]',
         '.swal2-confirm',
-      ].join(', ')).first();
+      ];
 
-      if (await confirmBtn.isVisible({ timeout: 3000 }).catch(() => false)) {
-        log('Confirmation dialog detected, clicking confirm...');
-        await confirmBtn.click();
-        await page.waitForTimeout(2000);
-        await saveScreenshot(page, '06-after-confirm');
+      for (const modalSel of modalBtnSelectors) {
+        const modalBtn = page.locator(modalSel).first();
+        if (await modalBtn.isVisible({ timeout: 2000 }).catch(() => false)) {
+          log(`Modal confirm button found with selector: ${modalSel}, clicking...`);
+          await modalBtn.click();
+          await page.waitForTimeout(4000);
+          await saveScreenshot(page, '06-after-modal-confirm');
+          break;
+        }
       }
 
-      log('Clock In BERHASIL! ✅');
+      // Tunggu jaringan idle untuk memastikan API request absensi selesai
+      await page.waitForLoadState('networkidle', { timeout: 10000 }).catch(() => {});
+      await page.waitForTimeout(3000);
+      await saveScreenshot(page, '07-final-attendance-status');
+
+      log('Clock In process finished! ✅');
     }
 
   } catch (err) {
