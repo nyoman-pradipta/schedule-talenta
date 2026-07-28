@@ -77,14 +77,30 @@ async function saveScreenshot(page, name) {
 
   try {
     // ── Step 1: Login ──────────────────────────────────────────────────────────
-    log('Navigating to login page...');
-    await page.goto(`${TALENTA_URL}/login`, { waitUntil: 'domcontentloaded', timeout: 30000 });
+    log('Navigating to Talenta (will redirect to Mekari SSO)...');
+    // Buka root URL — Talenta akan redirect ke Mekari SSO login
+    await page.goto(TALENTA_URL, { waitUntil: 'domcontentloaded', timeout: 30000 });
+    // Tunggu redirect selesai (Mekari SSO bisa butuh waktu)
+    await page.waitForTimeout(3000);
     await saveScreenshot(page, '01-login-page');
+    log(`Login page URL: ${page.url()}`);
 
-    // Isi email
+    // Isi email — coba berbagai selector (Talenta & Mekari SSO)
     log('Filling email...');
-    await page.waitForSelector('input[type="email"], input[name="email"], input[placeholder*="email" i]', { timeout: 15000 });
-    await page.fill('input[type="email"], input[name="email"], input[placeholder*="email" i]', EMAIL);
+    const emailSelectors = [
+      'input[type="email"]',
+      'input[name="email"]',
+      'input[id="email"]',
+      'input[placeholder*="email" i]',
+      'input[placeholder*="Email" i]',
+      'input[autocomplete="email"]',
+      'input[autocomplete="username"]',
+      'input[name="user[email]"]',
+      'input[id="user_email"]',
+    ].join(', ');
+
+    await page.waitForSelector(emailSelectors, { timeout: 20000 });
+    await page.fill(emailSelectors, EMAIL);
 
     // Isi password
     log('Filling password...');
