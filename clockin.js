@@ -59,6 +59,7 @@ async function saveScreenshot(page, name) {
       '--no-sandbox',
       '--disable-setuid-sandbox',
       '--disable-dev-shm-usage',
+      '--disable-blink-features=AutomationControlled',
       '--use-fake-ui-for-media-stream',
       '--use-fake-device-for-media-stream',
     ],
@@ -75,13 +76,55 @@ async function saveScreenshot(page, name) {
     viewport: { width: 1280, height: 800 },
   });
 
+  // Intercept API verify-bot agar selalu mengembalikan data: true
+  await context.route('**/verify-bot**', (route) => {
+    log('[ROUTE INTERCEPT] /verify-bot => mocking response data: true');
+    route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({ message: 'success', status: 200, data: true }),
+    });
+  });
+
   // Grant permission spesifik untuk origin Talenta
   await context.grantPermissions(['geolocation', 'camera'], { origin: 'https://hr.talenta.co' });
   await context.grantPermissions(['geolocation', 'camera'], { origin: 'https://account.mekari.com' });
 
-  // Override navigator.geolocation via JS injection dengan callback async (setTimeout)
-  // Sangat penting: React/Vue Promise wrapper membutuhkan callback async agar tidak race-condition!
+  // Anti-bot stealth + Geolocation override via JS injection
   await context.addInitScript(({ lat, lng }) => {
+    // 1. Hide webdriver
+    Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
+
+    // 2. Mock chrome object & plugins
+    window.chrome = { runtime: {}, loadTimes: function() {}, csi: function() {}, app: {} };
+    Object.defineProperty(navigator, 'plugins', { get: () => [1, 2, 3, 4, 5] });
+    Object.defineProperty(navigator, 'languages', { get: () => ['id-ID', 'id', 'en-US', 'en'] });
+
+    // 3. Mock userAgentData agar tidak mengandung 'HeadlessChrome'
+    if (navigator.userAgentData) {
+      Object.defineProperty(navigator, 'userAgentData', {
+        get: () => ({
+          brands: [
+            { brand: 'Not/A)Brand', version: '8' },
+            { brand: 'Chromium', version: '126' },
+            { brand: 'Google Chrome', version: '126' },
+          ],
+          mobile: false,
+          platform: 'Windows',
+          getHighEntropyValues: () =>
+            Promise.resolve({
+              architecture: 'x86',
+              bitness: '64',
+              model: '',
+              platform: 'Windows',
+              platformVersion: '10.0.0',
+              uaFullVersion: '126.0.6478.127',
+            }),
+        }),
+      });
+    }
+
+    // 4. Geolocation mock dengan callback async
     function createPos() {
       return {
         coords: {
