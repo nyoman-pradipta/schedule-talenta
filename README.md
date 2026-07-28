@@ -1,8 +1,10 @@
-# Auto Clock-in Talenta 🕐
+# Auto Clock-in & Clock-out Talenta 🕐
 
-Sistem otomasi clock-in ke **Talenta by Mekari** menggunakan Playwright headless browser + GitHub Actions cron job.
+Sistem otomasi clock-in dan clock-out ke **Talenta by Mekari** menggunakan Playwright headless browser + GitHub Actions cron job.
 
-**Jadwal**: Setiap **Senin–Jumat jam 08:40 WITA** (00:40 UTC).
+**Jadwal Otomatis (Senin – Jumat)**:
+- 🟢 **Clock In**: Jam **08:40 WITA** (00:40 UTC)
+- 🔴 **Clock Out**: Jam **18:10 WITA / 6:10 PM** (10:10 UTC)
 
 ---
 

@@ -1,0 +1,360 @@
+/**
+ * Auto Clock-Out Talenta
+ * Login ke hr.talenta.co dan clock out dengan geolocation & anti-bot spoofing.
+ *
+ * ENV vars (dari GitHub Secrets):
+ *   TALENTA_EMAIL      - email login
+ *   TALENTA_PASSWORD   - password login
+ *   TALENTA_LATITUDE   - latitude koordinat rumah/kantor (contoh: -5.1477)
+ *   TALENTA_LONGITUDE  - longitude koordinat rumah/kantor (contoh: 119.4327)
+ *
+ * Flags:
+ *   --dry-run  - login saja, tidak klik Clock Out (untuk testing)
+ */
+
+const { chromium } = require('playwright');
+
+// ─── Config ───────────────────────────────────────────────────────────────────
+const EMAIL    = process.env.TALENTA_EMAIL;
+const PASSWORD = process.env.TALENTA_PASSWORD;
+const LAT      = parseFloat(process.env.TALENTA_LATITUDE  || '-5.1477');
+const LNG      = parseFloat(process.env.TALENTA_LONGITUDE || '119.4327');
+const DRY_RUN  = process.argv.includes('--dry-run');
+
+const TALENTA_URL    = 'https://hr.talenta.co';
+const SCREENSHOT_DIR = 'screenshots';
+
+// ─── Helpers ──────────────────────────────────────────────────────────────────
+function log(msg) {
+  const ts = new Date().toISOString();
+  console.log(`[${ts}] ${msg}`);
+}
+
+function fail(msg, err) {
+  console.error(`[ERROR] ${msg}`, err || '');
+  process.exit(1);
+}
+
+async function saveScreenshot(page, name) {
+  const fs = require('fs');
+  if (!fs.existsSync(SCREENSHOT_DIR)) fs.mkdirSync(SCREENSHOT_DIR);
+  const path = `${SCREENSHOT_DIR}/${name}-${Date.now()}.png`;
+  await page.screenshot({ path, fullPage: false });
+  log(`Screenshot saved: ${path}`);
+}
+
+// ─── Main ─────────────────────────────────────────────────────────────────────
+(async () => {
+  // Validasi env
+  if (!EMAIL || !PASSWORD) {
+    fail('TALENTA_EMAIL dan TALENTA_PASSWORD harus diset sebagai environment variable.');
+  }
+
+  log(`Mode: ${DRY_RUN ? 'DRY RUN (no clock-out)' : 'LIVE CLOCK OUT'}`);
+  log(`Geolocation: lat=${LAT}, lng=${LNG}`);
+
+  const browser = await chromium.launch({
+    headless: true,
+    args: [
+      '--no-sandbox',
+      '--disable-setuid-sandbox',
+      '--disable-dev-shm-usage',
+      '--disable-blink-features=AutomationControlled',
+      '--use-fake-ui-for-media-stream',
+      '--use-fake-device-for-media-stream',
+    ],
+  });
+
+  // Buat context dengan geolocation + camera spoofed
+  const context = await browser.newContext({
+    geolocation: { latitude: LAT, longitude: LNG, accuracy: 15 },
+    permissions: ['geolocation', 'camera'],
+    locale: 'id-ID',
+    timezoneId: 'Asia/Makassar',
+    userAgent:
+      'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36',
+    viewport: { width: 1280, height: 800 },
+  });
+
+  // Intercept API verify-bot agar selalu mengembalikan data: true
+  await context.route('**/verify-bot**', (route) => {
+    log('[ROUTE INTERCEPT] /verify-bot => mocking response data: true');
+    route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({ message: 'success', status: 200, data: true }),
+    });
+  });
+
+  // Grant permission spesifik untuk origin Talenta
+  await context.grantPermissions(['geolocation', 'camera'], { origin: 'https://hr.talenta.co' });
+  await context.grantPermissions(['geolocation', 'camera'], { origin: 'https://account.mekari.com' });
+
+  // Anti-bot stealth + Geolocation override via JS injection
+  await context.addInitScript(({ lat, lng }) => {
+    // 1. Hide webdriver
+    Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
+
+    // 2. Mock chrome object & plugins
+    window.chrome = { runtime: {}, loadTimes: function() {}, csi: function() {}, app: {} };
+    Object.defineProperty(navigator, 'plugins', { get: () => [1, 2, 3, 4, 5] });
+    Object.defineProperty(navigator, 'languages', { get: () => ['id-ID', 'id', 'en-US', 'en'] });
+
+    // 3. Mock userAgentData agar tidak mengandung 'HeadlessChrome'
+    if (navigator.userAgentData) {
+      Object.defineProperty(navigator, 'userAgentData', {
+        get: () => ({
+          brands: [
+            { brand: 'Not/A)Brand', version: '8' },
+            { brand: 'Chromium', version: '126' },
+            { brand: 'Google Chrome', version: '126' },
+          ],
+          mobile: false,
+          platform: 'Windows',
+          getHighEntropyValues: () =>
+            Promise.resolve({
+              architecture: 'x86',
+              bitness: '64',
+              model: '',
+              platform: 'Windows',
+              platformVersion: '10.0.0',
+              uaFullVersion: '126.0.6478.127',
+            }),
+        }),
+      });
+    }
+
+    // 4. Geolocation mock dengan callback async
+    function createPos() {
+      return {
+        coords: {
+          latitude: lat,
+          longitude: lng,
+          accuracy: 15,
+          altitude: null,
+          altitudeAccuracy: null,
+          heading: null,
+          speed: null,
+        },
+        timestamp: Date.now(),
+      };
+    }
+
+    const mockGeo = {
+      getCurrentPosition: function(success, error, options) {
+        setTimeout(() => {
+          if (typeof success === 'function') success(createPos());
+        }, 50);
+      },
+      watchPosition: function(success, error, options) {
+        setTimeout(() => {
+          if (typeof success === 'function') success(createPos());
+        }, 50);
+        return 999;
+      },
+      clearWatch: function() {},
+    };
+
+    try {
+      Object.defineProperty(navigator, 'geolocation', {
+        get: () => mockGeo,
+        configurable: true,
+      });
+    } catch (e) {
+      navigator.geolocation = mockGeo;
+    }
+
+    if (window.navigator.permissions) {
+      const origQuery = window.navigator.permissions.query.bind(window.navigator.permissions);
+      window.navigator.permissions.query = function(params) {
+        if (params && params.name === 'geolocation') {
+          return Promise.resolve({ state: 'granted', onchange: null });
+        }
+        return origQuery(params);
+      };
+    }
+  }, { lat: LAT, lng: LNG });
+
+  const page = await context.newPage();
+
+  // Listen console logs dari browser
+  page.on('console', (msg) => {
+    if (msg.type() === 'error' || msg.text().includes('error') || msg.text().includes('Attendance')) {
+      log(`[BROWSER CONSOLE] ${msg.type().toUpperCase()}: ${msg.text()}`);
+    }
+  });
+
+  // Listen semua API response yang berkaitan dengan attendance/clock-out
+  page.on('response', async (response) => {
+    const url = response.url();
+    if (url.includes('attendance') || url.includes('clock') || url.includes('live') || url.includes('api')) {
+      const status = response.status();
+      if (status >= 400 || url.includes('clock') || url.includes('attendance')) {
+        try {
+          const body = await response.text();
+          log(`[API RESPONSE ${status}] ${url} => ${body.substring(0, 300)}`);
+        } catch (e) {}
+      }
+    }
+  });
+
+  try {
+    // ── Step 1: Login ──────────────────────────────────────────────────────────
+    log('Navigating to Talenta (will redirect to Mekari SSO)...');
+    await page.goto(TALENTA_URL, { waitUntil: 'domcontentloaded', timeout: 30000 });
+    await page.waitForTimeout(3000);
+    await saveScreenshot(page, '01-login-page');
+    log(`Login page URL: ${page.url()}`);
+
+    log('Filling email...');
+    const emailSelectors = [
+      'input[type="email"]',
+      'input[name="email"]',
+      'input[id="email"]',
+      'input[placeholder*="email" i]',
+      'input[placeholder*="Email" i]',
+      'input[autocomplete="email"]',
+      'input[autocomplete="username"]',
+      'input[name="user[email]"]',
+      'input[id="user_email"]',
+    ].join(', ');
+
+    await page.waitForSelector(emailSelectors, { timeout: 20000 });
+    await page.fill(emailSelectors, EMAIL);
+
+    log('Filling password...');
+    await page.fill('input[type="password"], input[name="password"]', PASSWORD);
+    await saveScreenshot(page, '02-credentials-filled');
+
+    log('Clicking login button...');
+    await page.click('button[type="submit"], button:has-text("Login"), button:has-text("Masuk"), input[type="submit"]');
+
+    await page.waitForURL((url) => !url.toString().includes('/login'), { timeout: 30000 });
+    log(`Logged in. Current URL: ${page.url()}`);
+    await saveScreenshot(page, '03-after-login');
+
+    // ── Step 2: Navigasi ke Live Attendance ───────────────────────────────────
+    log('Navigating to Live Attendance...');
+    await page.goto(`${TALENTA_URL}/live-attendance`, { waitUntil: 'domcontentloaded', timeout: 20000 });
+    await page.waitForTimeout(2000);
+
+    if (page.url().includes('/live-attendance') === false && page.url().includes('/attendance') === false) {
+      log('Direct URL failed, trying menu navigation...');
+      const attendanceMenu = page.locator([
+        'a:has-text("Live Attendance")',
+        'a:has-text("Attendance")',
+        'a:has-text("Absensi")',
+        '[href*="live-attendance"]',
+        '[href*="attendance"]',
+      ].join(', ')).first();
+
+      if (await attendanceMenu.isVisible({ timeout: 5000 })) {
+        await attendanceMenu.click();
+        await page.waitForLoadState('domcontentloaded');
+      }
+    }
+
+    await saveScreenshot(page, '04-attendance-page');
+    log(`Attendance page URL: ${page.url()}`);
+
+    // ── Step 3: Clock Out ─────────────────────────────────────────────────────
+    if (DRY_RUN) {
+      log('DRY RUN: skipping Clock Out click.');
+      await saveScreenshot(page, '05-dry-run-done');
+    } else {
+      log('Looking for Clock Out button...');
+      await page.waitForTimeout(3000);
+
+      // Selectors untuk tombol Clock Out — urutan prioritas
+      const clockOutSelectors = [
+        'button:has-text("Clock Out")',
+        'button:has-text("Clock out")',
+        'button:has-text("Pulang")',
+        'button:has-text("Check Out")',
+        '[data-testid*="clock-out"]',
+        '[class*="clock-out"]',
+        'button.btn-clockout',
+        'button:has-text("CO")',
+      ];
+
+      let clockOutBtn = null;
+      for (const sel of clockOutSelectors) {
+        const el = page.locator(sel).first();
+        if (await el.isVisible({ timeout: 3000 }).catch(() => false)) {
+          clockOutBtn = el;
+          log(`Found Clock Out button with selector: ${sel}`);
+          break;
+        }
+      }
+
+      if (!clockOutBtn) {
+        await saveScreenshot(page, '05-clockout-not-found');
+        fail('Tombol Clock Out tidak ditemukan! Cek screenshot untuk debug.');
+      }
+
+      // Klik Clock Out
+      await clockOutBtn.click();
+      log('Clicked Clock Out button!');
+      await page.waitForTimeout(4000);
+      await saveScreenshot(page, '05-after-clockout');
+
+      // Cek apakah ada modal kamera/selfie atau konfirmasi
+      const selfieBtnSelectors = [
+        'button:has-text("Snapshot")',
+        'button:has-text("Ambil Foto")',
+        'button:has-text("Take Photo")',
+        'button:has-text("Foto")',
+        '[class*="snapshot"]',
+        '[class*="capture"]',
+      ];
+
+      for (const selfieSel of selfieBtnSelectors) {
+        const selfieBtn = page.locator(selfieSel).first();
+        if (await selfieBtn.isVisible({ timeout: 2000 }).catch(() => false)) {
+          log(`Selfie capture button found with selector: ${selfieSel}, clicking...`);
+          await selfieBtn.click();
+          await page.waitForTimeout(2000);
+          await saveScreenshot(page, '06-after-selfie-snap');
+          break;
+        }
+      }
+
+      // Cek apakah ada dialog / modal konfirmasi
+      const modalBtnSelectors = [
+        '.modal-dialog button:has-text("Clock Out")',
+        '.modal button:has-text("Clock Out")',
+        'button:has-text("Submit")',
+        'button:has-text("Kirim")',
+        'button:has-text("OK")',
+        'button:has-text("Confirm")',
+        'button:has-text("Ya")',
+        'button:has-text("Iya")',
+        'button[class*="confirm"]',
+        '.swal2-confirm',
+      ];
+
+      for (const modalSel of modalBtnSelectors) {
+        const modalBtn = page.locator(modalSel).first();
+        if (await modalBtn.isVisible({ timeout: 2000 }).catch(() => false)) {
+          log(`Modal confirm button found with selector: ${modalSel}, clicking...`);
+          await modalBtn.click();
+          await page.waitForTimeout(4000);
+          await saveScreenshot(page, '06-after-modal-confirm');
+          break;
+        }
+      }
+
+      await page.waitForLoadState('networkidle', { timeout: 10000 }).catch(() => {});
+      await page.waitForTimeout(3000);
+      await saveScreenshot(page, '07-final-clockout-status');
+
+      log('Clock Out process finished! ✅');
+    }
+
+  } catch (err) {
+    await saveScreenshot(page, 'ERROR').catch(() => {});
+    fail('Script error:', err);
+  } finally {
+    await browser.close();
+  }
+})();

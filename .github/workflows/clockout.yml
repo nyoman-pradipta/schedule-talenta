@@ -1,0 +1,70 @@
+name: Auto Clock-out Talenta
+
+on:
+  schedule:
+    # 10:10 UTC = 18:10 WITA (06:10 PM WITA, UTC+8), Senin-Jumat
+    - cron: '10 10 * * 1-5'
+
+  # Trigger manual dari GitHub UI
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: 'Dry run (login only, no clock-out)?'
+        required: false
+        default: 'false'
+        type: choice
+        options:
+          - 'false'
+          - 'true'
+
+jobs:
+  clock-out:
+    name: Clock Out Talenta
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Install Playwright Chromium
+        run: npx playwright install chromium --with-deps
+
+      - name: Run Clock-Out Script
+        env:
+          TALENTA_EMAIL: ${{ secrets.TALENTA_EMAIL }}
+          TALENTA_PASSWORD: ${{ secrets.TALENTA_PASSWORD }}
+          TALENTA_LATITUDE: ${{ secrets.TALENTA_LATITUDE }}
+          TALENTA_LONGITUDE: ${{ secrets.TALENTA_LONGITUDE }}
+        run: |
+          if [ "${{ github.event.inputs.dry_run }}" = "true" ]; then
+            node clockout.js --dry-run
+          else
+            node clockout.js
+          fi
+
+      - name: Upload Screenshots
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: clockout-screenshots-${{ github.run_id }}
+          path: screenshots/
+          retention-days: 7
+          if-no-files-found: warn
+
+      - name: Notify success
+        if: success()
+        run: echo "✅ Clock Out berhasil pada $(TZ='Asia/Makassar' date '+%Y-%m-%d %H:%M WITA')"
+
+      - name: Notify failure
+        if: failure()
+        run: echo "❌ Clock Out GAGAL! Cek screenshots di artifacts untuk debug."
