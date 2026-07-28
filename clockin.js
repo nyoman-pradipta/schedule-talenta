@@ -64,7 +64,7 @@ async function saveScreenshot(page, name) {
 
   // Buat context dengan geolocation spoofed
   const context = await browser.newContext({
-    geolocation: { latitude: LAT, longitude: LNG, accuracy: 20 },
+    geolocation: { latitude: LAT, longitude: LNG, accuracy: 15 },
     permissions: ['geolocation'],
     locale: 'id-ID',
     timezoneId: 'Asia/Makassar',
@@ -73,33 +73,56 @@ async function saveScreenshot(page, name) {
     viewport: { width: 1280, height: 800 },
   });
 
-  // Override navigator.geolocation via JS injection (belt+suspenders)
-  // Ini memastikan website mendapat koordinat rumah bahkan jika Playwright
-  // context geolocation tidak ter-pickup oleh framework JS tertentu
+  // Grant permission spesifik untuk origin Talenta
+  await context.grantPermissions(['geolocation'], { origin: 'https://hr.talenta.co' });
+  await context.grantPermissions(['geolocation'], { origin: 'https://account.mekari.com' });
+
+  // Override navigator.geolocation via JS injection dengan callback async (setTimeout)
+  // Sangat penting: React/Vue Promise wrapper membutuhkan callback async agar tidak race-condition!
   await context.addInitScript(({ lat, lng }) => {
-    const mockPosition = {
-      coords: {
-        latitude: lat,
-        longitude: lng,
-        accuracy: 20,
-        altitude: null,
-        altitudeAccuracy: null,
-        heading: null,
-        speed: null,
+    function createPos() {
+      return {
+        coords: {
+          latitude: lat,
+          longitude: lng,
+          accuracy: 15,
+          altitude: null,
+          altitudeAccuracy: null,
+          heading: null,
+          speed: null,
+        },
+        timestamp: Date.now(),
+      };
+    }
+
+    const mockGeo = {
+      getCurrentPosition: function(success, error, options) {
+        setTimeout(() => {
+          if (typeof success === 'function') success(createPos());
+        }, 50);
       },
-      timestamp: Date.now(),
+      watchPosition: function(success, error, options) {
+        setTimeout(() => {
+          if (typeof success === 'function') success(createPos());
+        }, 50);
+        return 999;
+      },
+      clearWatch: function() {},
     };
-    const geo = {
-      getCurrentPosition: (success) => success(mockPosition),
-      watchPosition: (success) => { success(mockPosition); return 1; },
-      clearWatch: () => {},
-    };
-    Object.defineProperty(navigator, 'geolocation', { value: geo, writable: false });
-    // Also override permissions API so site thinks geolocation is granted
-    const origQuery = window.navigator.permissions && window.navigator.permissions.query.bind(window.navigator.permissions);
-    if (origQuery) {
-      window.navigator.permissions.query = (params) => {
-        if (params.name === 'geolocation') {
+
+    try {
+      Object.defineProperty(navigator, 'geolocation', {
+        get: () => mockGeo,
+        configurable: true,
+      });
+    } catch (e) {
+      navigator.geolocation = mockGeo;
+    }
+
+    if (window.navigator.permissions) {
+      const origQuery = window.navigator.permissions.query.bind(window.navigator.permissions);
+      window.navigator.permissions.query = function(params) {
+        if (params && params.name === 'geolocation') {
           return Promise.resolve({ state: 'granted', onchange: null });
         }
         return origQuery(params);
