@@ -4,6 +4,8 @@ on:
   schedule:
     # 00:40 UTC = 08:40 WITA (UTC+8), Senin-Jumat
     - cron: '40 0 * * 1-5'
+    # 01:00 UTC = 09:00 WITA — backup jika run 08:40 delay/skip
+    - cron: '0 1 * * 1-5'
 
   # Bisa juga trigger manual dari GitHub UI
   workflow_dispatch:
@@ -16,6 +18,7 @@ on:
         options:
           - 'false'
           - 'true'
+
 
 jobs:
   clock-in:
