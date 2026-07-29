@@ -4,6 +4,8 @@ on:
   schedule:
     # 10:10 UTC = 18:10 WITA (06:10 PM WITA, UTC+8), Senin-Jumat
     - cron: '10 10 * * 1-5'
+    # 10:30 UTC = 18:30 WITA — backup jika run 18:10 delay/skip
+    - cron: '30 10 * * 1-5'
 
   # Trigger manual dari GitHub UI
   workflow_dispatch:
